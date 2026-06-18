@@ -1,6 +1,9 @@
 import sys
 import copy
 import json
+from Dashboard.database import *
+from Dashboard.ui_dialogs import EnterNameDialog
+from Dashboard.player_manager import save_player_name, load_player_name
 import random
 from PyQt6.QtWidgets import QDialog
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, 
@@ -518,50 +521,39 @@ class RekGameUI(QMainWindow):
         self.init_ui()
         self.restart_game()
     def load_game(self):
-        try:
-            with open("savegame.json", "r", encoding="utf-8") as f:
-                data = json.load(f)
 
-            self.board_logic.grid = data["board"]
-            self.current_player = data["current_player"]
-            self.move_count = data["move_count"]
-            self.seconds_elapsed = data["seconds_elapsed"]
-            self._mode = data["mode"]
+        data = load_game_db()
 
-            self.lbl_moves.setText(
-                f"⟳ ចលនា : {self.move_count}"
-            )
+        if not data:
+            return
 
-            self.lbl_turn_en.setText(
-                f"TURN : {'GREEN' if self.current_player == 'G' else 'LIGHT GREEN'}"
-            )
+        self.board_logic.grid = data["board"]
+        self.current_player = data["current_player"]
+        self.move_count = data["move_count"]
+        self.seconds_elapsed = data["seconds_elapsed"]
+        self._mode = data["mode"]
 
-            self.refresh_board_visuals()
+        self.lbl_moves.setText(
+            f"⟳ ចលនា : {self.move_count}"
+        )
 
-        except FileNotFoundError:
-            pass
+        self.lbl_turn_en.setText(
+            f"TURN : {'GREEN' if self.current_player == 'G' else 'LIGHT GREEN'}"
+        )
+
+        self.refresh_board_visuals()
     def save_game(self):
-        data = {
-            "board": self.board_logic.grid,
-            "current_player": self.current_player,
-            "move_count": self.move_count,
-            "seconds_elapsed": self.seconds_elapsed,
-            "mode": self._mode
-        }
 
-        try:
-            with open("savegame.json", "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=4)
+        save_game_db(
+            self.board_logic.grid,
+            self.current_player,
+            self.move_count,
+            self.seconds_elapsed,
+            self._mode
+        )
 
-            dlg = SaveSuccessDialog()
-            dlg.exec()
-
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Save Failed:\n{e}"
-            )
+        dlg = SaveSuccessDialog()
+        dlg.exec()
     def _show_information(self):
         dlg = InformationDialog()
         dlg.exec()
@@ -603,19 +595,39 @@ class RekGameUI(QMainWindow):
 
         header_title = QLabel("ល្បែងរែក\nREK GAME")
         header_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header_title.setStyleSheet("color: #ca8b47; font-size: 24px; font-family: 'Khmer OS Muol Light'; line-height: 40px; border-bottom: 2px solid #6a4b18; padding-bottom: 15px;")
+        header_title.setStyleSheet(
+            "color: #ca8b47; font-size: 24px; "
+            "font-family: 'Khmer OS Muol Light'; "
+            "line-height: 40px; border-bottom: 2px solid #6a4b18; "
+            "padding-bottom: 15px;"
+        )
         left_layout.addWidget(header_title)
 
+        # ===== Player Name =====
+        player_name = load_player_name() or "Player"
+
+        self.lbl_player = QLabel(f"👤 {player_name}")
+        self.lbl_player.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_player.setStyleSheet("""
+            color: #ecc06a;
+            font-size: 14px;
+            font-weight: bold;
+            padding: 8px;
+        """)
+        left_layout.addWidget(self.lbl_player)
+
+        # ===== Menu Buttons =====
         self.btn_home = self._create_side_btn("ទំព័រដើម\nHOME")
         self.btn_play = self._create_side_btn("លេងហ្គេម\nPLAY GAME", active=True)
         self.btn_rules = self._create_side_btn("ច្បាប់លេង\nRULES")
         self.btn_info = self._create_side_btn("ព័ត៌មាន\nINFORMATION")
         self.btn_exit_side = self._create_side_btn("ចាកចេញ\nEXIT")
-
+    
         self.btn_home.clicked.connect(self._back_home)
         self.btn_rules.clicked.connect(self._go_rules)
         self.btn_exit_side.clicked.connect(self.close)
         self.btn_info.clicked.connect(self._show_information)
+        
         left_layout.addWidget(self.btn_home)
         left_layout.addWidget(self.btn_play)
         left_layout.addWidget(self.btn_rules)
@@ -880,16 +892,35 @@ class RekGameUI(QMainWindow):
     def check_game_status(self):
         g_count, l_count, g_king, l_king = self.board_logic.count_pieces()
         winner = None
-        if not g_king or g_count == 0: winner = "ក្រុមបៃតងខ្ចី (AI/Sok) ឈ្នះ!"
-        elif not l_king or l_count == 0: winner = "ក្រុមបៃតង (អ្នក) ឈ្នះ!"
-        if winner:
-            self.game_over = True
-            self.timer.stop()
-            dlg = WinnerDialog(winner)
-            dlg.exec()
-            return True
-        return False
 
+        if not g_king or g_count == 0:
+            winner = "ក្រុមបៃតងខ្ចី (AI/Sok) ឈ្នះ!"
+        elif not l_king or l_count == 0:
+            winner = "ក្រុមបៃតង (អ្នក) ឈ្នះ!"
+
+        # 👉 IMPORTANT: only run when game ended
+        if winner is None:
+            return False
+
+        player_name = load_player_name() or "Player"
+
+        if self._mode == "ai":
+            if "អ្នក" in winner:
+                save_history(player_name, "AI", "WIN")
+            else:
+                save_history(player_name, "AI", "LOSE")
+
+        else:
+            save_history(player_name, "PVP", winner)
+
+        # (optional) show winner dialog here if you want
+        self.game_over = True
+        self.timer.stop()
+
+        dlg = WinnerDialog(winner)
+        dlg.exec()
+
+        return True
     def restart_game(self):
         self.board_logic.reset_board()
         self.current_player = 'G'
@@ -948,7 +979,23 @@ class HomeUI(QWidget):
         logo_title.setStyleSheet("color: #ecc06a; font-size: 70px; font-family: 'Khmer OS Muol Light'; margin-top: 20px;")
         logo_sub = QLabel("R  È  K")
         logo_sub.setStyleSheet("color: #ecc06a; font-size: 20px; font-weight: bold; letter-spacing: 5px;")
+        wins, loses = get_stats()
 
+        stats = QLabel(
+            f"🏆 Wins : {wins}\n❌ Loses : {loses}"
+        )
+
+        stats.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        stats.setStyleSheet("""
+            color:#ecc06a;
+            font-size:16px;
+            font-weight:bold;
+            border:1px solid #ecc06a;
+            border-radius:10px;
+            padding:10px;
+            background-color:#8a5720;
+""")
         left_layout.addStretch()
         left_layout.addWidget(deco_label, alignment=Qt.AlignmentFlag.AlignCenter)
         left_layout.addWidget(logo_title, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -972,10 +1019,17 @@ QFrame{
         self.btn_player = self._create_menu_btn("👥   លេងគ្នាពីរនាក់ (Player vs Player)", "#9f672b")
         self.btn_rules = self._create_menu_btn("📜   ច្បាប់លេងហ្គេម (Rules)", "#9f672b")
         self.btn_exit = self._create_menu_btn("✕   ចាកចេញ (Exit)", "#9f672b")
+        self.btn_history = self._create_menu_btn(
+    "🏆 ប្រវត្តិការលេង (History)",
+    "#9f672b"
+)
 
         self.btn_ai.clicked.connect(self.show_ai_dialog)
         self.btn_player.clicked.connect(lambda: self.controller.start_game("player"))
         self.btn_rules.clicked.connect(lambda: self.controller.show_rules("home"))
+        self.btn_history.clicked.connect(
+    self.show_history
+)
         self.btn_exit.clicked.connect(self.close)
 
         right_layout.addWidget(self.btn_ai)
@@ -985,10 +1039,16 @@ QFrame{
         right_layout.addWidget(self.btn_rules)
         right_layout.addSpacing(30)
         right_layout.addWidget(self.btn_exit)
+        right_layout.addSpacing(30)
+        right_layout.addWidget(self.btn_history)
         right_layout.addStretch()
         main_layout.addWidget(left_panel)
         main_layout.addWidget(right_panel, 1)
-
+        
+        
+    def show_history(self):
+        dlg = HistoryDialog()
+        dlg.exec()
     def _create_menu_btn(self, text, bg_color):
         btn = QPushButton(text)
         btn.setFixedHeight(55)
@@ -1048,11 +1108,24 @@ class GameController:
 
     def start_game(self, mode, load_saved=False):
 
+        # ENTER NAME ONLY FOR NEW AI GAME
+        if mode == "ai" and not load_saved:
+            dialog = EnterNameDialog()
+
+            if dialog.exec() == 0:
+                return
+
+            name = dialog.get_name()
+
+            if name:
+                save_player_name(name)
+
         self.game_window = RekGameUI(
             mode=mode,
             controller=self
         )
 
+        # Load saved game
         if load_saved:
             self.game_window.load_game()
 
@@ -1132,37 +1205,6 @@ class WinnerDialog(QDialog):
         layout.addStretch()
         layout.addWidget(btn)
 ##UI for Continue
-class NewContinueDialog(QDialog):
-    def __init__(self):
-        super().__init__()
-
-        self.choice = None
-
-        self.setWindowTitle("Play vs AI")
-        self.setFixedSize(350, 180)
-
-        layout = QVBoxLayout(self)
-
-        title = QLabel("ជ្រើសរើសរបៀបលេង")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        btn_new = QPushButton("New Game")
-        btn_continue = QPushButton("Continue Game")
-
-        btn_new.clicked.connect(self.new_game)
-        btn_continue.clicked.connect(self.continue_game)
-
-        layout.addWidget(title)
-        layout.addWidget(btn_new)
-        layout.addWidget(btn_continue)
-
-    def new_game(self):
-        self.choice = "new"
-        self.accept()
-
-    def continue_game(self):
-        self.choice = "continue"
-        self.accept()
 class SaveSuccessDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -1342,7 +1384,47 @@ class NewContinueDialog(QDialog):
     def continue_game(self):
         self.choice = "continue"
         self.accept()
+##History Dailog
+class HistoryDialog(QDialog):
+
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("ប្រវត្តិការលេង")
+        self.resize(800, 500)
+
+        layout = QVBoxLayout(self)
+
+        title = QLabel("ប្រវត្តិការប្រកួត")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        text = QTextEdit()
+        text.setReadOnly(True)
+
+        history = load_history()
+
+        content = ""
+
+        for row in history:
+
+            content += (
+                f"👤 {row[0]}\n"
+                f"🎮 {row[1]}\n"
+                f"🏆 {row[2]}\n"
+                f"📅 {row[3]}\n"
+                f"{'-'*40}\n"
+            )
+
+        text.setText(content)
+
+        btn = QPushButton("បិទ")
+        btn.clicked.connect(self.accept)
+
+        layout.addWidget(title)
+        layout.addWidget(text)
+        layout.addWidget(btn)
 if __name__ == "__main__":
+    create_tables()
     app = QApplication(sys.argv)
     app.setFont(QFont("Khmer OS Battambang", 10))
     controller = GameController()
