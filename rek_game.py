@@ -1,14 +1,16 @@
 import sys
 import copy
 import json
+import time
 from Dashboard.database import *
 from Dashboard.ui_dialogs import EnterNameDialog
-from Dashboard.player_manager import save_player_name, load_player_name
+from Dashboard.player_manager import save_player_name, load_player_name, clear_player_name
 import random
 from PyQt6.QtWidgets import QDialog
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, 
                              QPushButton, QFrame, QVBoxLayout, QHBoxLayout, 
-                             QGridLayout, QMessageBox, QTextEdit)
+                             QGridLayout, QMessageBox, QTextEdit, QTableWidget, 
+                             QTableWidgetItem, QHeaderView, QLineEdit)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QFont,QPixmap
 from PyQt6.QtWidgets import QDialog
@@ -34,26 +36,32 @@ class BoardLogic:
         self.grid = [[None for _ in range(8)] for _ in range(8)]
         self.history = []
 
-        # 🟢 ក្រុមខាងលើ (G)
-        for c in range(7):           # ooooooo.
-            self.grid[0][c] = 'G'
+        layout_rows = [
+            "ooooooo-",
+            "-------O",
+            "oooooooo",
+            "--------",
+            "--------",
+            "oooooooo",
+            "O-------",
+            "-ooooooo",
+        ]
 
-        self.grid[1][7] = 'GK'       # .......O
+        for r, row in enumerate(layout_rows):
+            for c, cell in enumerate(row):
+                if cell == 'o':
+                    if r < 3:
+                        self.grid[r][c] = 'L'
+                    elif r > 4:
+                        self.grid[r][c] = 'G'
+                elif cell == 'O':
+                    if r < 3:
+                        self.grid[r][c] = 'LK'
+                    elif r > 4:
+                        self.grid[r][c] = 'GK'
 
-        for c in range(8):           # oooooooo
-            self.grid[2][c] = 'G'
-
-        # ជួរកណ្ដាលទំនេរ
-        # row 3, row 4 = None
-
-    # 🟡 ក្រុមខាងក្រោម (L)
-        for c in range(8):           # oooooooo
-            self.grid[5][c] = 'L'
-
-            self.grid[6][0] = 'LK'       # O.......
-
-        for c in range(1, 8):        # .ooooooo
-            self.grid[7][c] = 'L'
+        # The top side now represents the opposing player (AI or Player 2),
+        # while the bottom side is the human player's side.
 
     def get_piece(self, r, c): 
         return self.grid[r][c]
@@ -184,42 +192,172 @@ class BoardLogic:
 class AIAgent:
     def __init__(self, player_prefix='L'):
         self.player_prefix = player_prefix
+        self.opponent_prefix = 'G' if player_prefix == 'L' else 'L'
 
     def calculate_move(self, board_logic):
+        valid_moves = self._get_valid_moves(board_logic, self.player_prefix)
+        if not valid_moves:
+            return None
+
+        best_move = random.choice(valid_moves)
+        best_capture_score = -1
+
+        for move in valid_moves:
+            capture_score = self._count_captures(board_logic, move)
+            if capture_score > best_capture_score:
+                best_capture_score = capture_score
+                best_move = move
+
+        if best_capture_score >= 2:
+            return best_move
+
+        piece_count = sum(1 for row in board_logic.grid for piece in row if piece)
+        max_depth = 4 if piece_count > 18 else 5
+        deadline = time.perf_counter() + 1.85
+
+        for depth in range(2, max_depth + 1):
+            if time.perf_counter() >= deadline:
+                break
+            _, searched_move = self._search_root(board_logic, valid_moves, depth, deadline)
+            if searched_move is not None:
+                best_move = searched_move
+            if self._is_terminal(board_logic):
+                break
+
+        return best_move
+
+    def _get_valid_moves(self, board_logic, player):
         valid_moves = []
         for r in range(8):
             for c in range(8):
                 piece = board_logic.get_piece(r, c)
-                if piece and piece.startswith(self.player_prefix):
-                    for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                if piece and piece.startswith(player):
+                    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                         for step in range(1, 8):
                             nr, nc = r + dr * step, c + dc * step
                             if 0 <= nr < 8 and 0 <= nc < 8:
-                                if board_logic.is_valid_move(r, c, nr, nc, self.player_prefix):
+                                if board_logic.is_valid_move(r, c, nr, nc, player):
                                     valid_moves.append(((r, c), (nr, nc)))
-                                else: break
-                            else: break
-        if not valid_moves: return None
-        
-        best_move = random.choice(valid_moves)
-        max_captured = -1
+                                else:
+                                    break
+                            else:
+                                break
+        return valid_moves
+
+    def _count_captures(self, board_logic, move):
+        sr, sc = move[0]
+        er, ec = move[1]
+        temp_board = copy.deepcopy(board_logic)
+        captured = temp_board.make_move(sr, sc, er, ec)
+        return len(captured)
+
+    def _is_terminal(self, board_logic):
+        g_count, l_count, g_king, l_king = board_logic.count_pieces()
+        return not g_king or g_count == 0 or not l_king or l_count == 0
+
+    def _evaluate_board(self, board_logic):
+        g_count, l_count, g_king, l_king = board_logic.count_pieces()
+        if not l_king or l_count == 0:
+            return 100000
+        if not g_king or g_count == 0:
+            return -100000
+
+        my_count = l_count if self.player_prefix == 'L' else g_count
+        opp_count = g_count if self.player_prefix == 'L' else l_count
+        my_king = l_king if self.player_prefix == 'L' else g_king
+        opp_king = g_king if self.player_prefix == 'L' else l_king
+
+        score = (my_count - opp_count) * 14
+        score += (1 if my_king else 0) * 30
+        score -= (1 if opp_king else 0) * 30
+
+        score += self._mobility_score(board_logic, self.player_prefix) * 4
+        score -= self._mobility_score(board_logic, self.opponent_prefix) * 4
+
+        score += self._position_score(board_logic, self.player_prefix) * 2
+        score -= self._position_score(board_logic, self.opponent_prefix) * 2
+
+        return score
+
+    def _mobility_score(self, board_logic, player):
+        return len(self._get_valid_moves(board_logic, player))
+
+    def _position_score(self, board_logic, player):
+        center_weights = {
+            (3, 3): 4, (3, 4): 4, (4, 3): 4, (4, 4): 5,
+            (2, 3): 2, (3, 2): 2, (4, 5): 2, (5, 4): 2,
+            (2, 4): 2, (4, 2): 2, (3, 5): 2, (5, 3): 2,
+        }
+        score = 0
+        for r in range(8):
+            for c in range(8):
+                piece = board_logic.get_piece(r, c)
+                if piece and piece.startswith(player):
+                    score += center_weights.get((r, c), 0)
+                    if 'K' in piece:
+                        score += 2
+        return score
+
+    def _search_root(self, board_logic, valid_moves, depth, deadline):
+        best_score = -10**9
+        best_move = valid_moves[0]
         for move in valid_moves:
+            if time.perf_counter() >= deadline:
+                break
             (sr, sc), (er, ec) = move
-            temp_grid = copy.deepcopy(board_logic.grid)
-            piece = temp_grid[sr][sc]
-            temp_grid[sr][sc] = None
-            temp_grid[er][ec] = piece
-            
-            enemy = 'G'
-            cap = 0
-            if 0 <= ec - 1 and ec + 1 < 8:
-                if temp_grid[er][ec-1] and temp_grid[er][ec-1].startswith(enemy) and temp_grid[er][ec+1] and temp_grid[er][ec+1].startswith(enemy): cap += 2
-            if 0 <= er - 1 and er + 1 < 8:
-                if temp_grid[er-1][ec] and temp_grid[er-1][ec].startswith(enemy) and temp_grid[er+1][ec] and temp_grid[er+1][ec].startswith(enemy): cap += 2
-            if cap > max_captured:
-                max_captured = cap
+            child_board = copy.deepcopy(board_logic)
+            child_board.make_move(sr, sc, er, ec)
+            score, _ = self._minimax(child_board, depth - 1, -10**9, 10**9, False, deadline)
+            if score > best_score:
+                best_score = score
                 best_move = move
-        return best_move
+        return best_score, best_move
+
+    def _minimax(self, board_logic, depth, alpha, beta, maximizing, deadline):
+        if time.perf_counter() >= deadline:
+            return self._evaluate_board(board_logic), None
+        if depth == 0 or self._is_terminal(board_logic):
+            return self._evaluate_board(board_logic), None
+
+        player = self.player_prefix if maximizing else self.opponent_prefix
+        moves = self._get_valid_moves(board_logic, player)
+        if not moves:
+            return self._evaluate_board(board_logic), None
+
+        if maximizing:
+            best_score = -10**9
+            best_move = moves[0]
+            for move in moves:
+                if time.perf_counter() >= deadline:
+                    break
+                (sr, sc), (er, ec) = move
+                child_board = copy.deepcopy(board_logic)
+                child_board.make_move(sr, sc, er, ec)
+                score, _ = self._minimax(child_board, depth - 1, alpha, beta, False, deadline)
+                if score > best_score:
+                    best_score = score
+                    best_move = move
+                alpha = max(alpha, best_score)
+                if beta <= alpha:
+                    break
+            return best_score, best_move
+
+        best_score = 10**9
+        best_move = moves[0]
+        for move in moves:
+            if time.perf_counter() >= deadline:
+                break
+            (sr, sc), (er, ec) = move
+            child_board = copy.deepcopy(board_logic)
+            child_board.make_move(sr, sc, er, ec)
+            score, _ = self._minimax(child_board, depth - 1, alpha, beta, True, deadline)
+            if score < best_score:
+                best_score = score
+                best_move = move
+            beta = min(beta, best_score)
+            if beta <= alpha:
+                break
+        return best_score, best_move
 
 # ==========================================
 # ៤. សមាសភាគក្រឡាក្តារអុក (BOARD WIDGET COMPONENTS)
@@ -511,6 +649,7 @@ class RekGameUI(QMainWindow):
         self.valid_moves = []
         self.move_count = 0
         self.game_over = False
+        self.ai_thinking = False
         
         self.seconds_elapsed = 0
         self.timer = QTimer(self)
@@ -721,10 +860,12 @@ class RekGameUI(QMainWindow):
         self.lbl_time = self._create_info_label("⏱️ រយៈពេល : 00:00:00")
         self.lbl_moves = self._create_info_label("⟳ ចលនា : 0")
         self.lbl_mode = self._create_info_label(f"🤖 Mode : {self._mode.upper()}")
+        self.lbl_ai_status = self._create_info_label("🤖 AI : Your turn")
         
         right_layout.addWidget(self.lbl_time)
         right_layout.addWidget(self.lbl_moves)
         right_layout.addWidget(self.lbl_mode)
+        right_layout.addWidget(self.lbl_ai_status)
 
         ctrl_header = QLabel("បញ្ជា-CONTROLS")
         ctrl_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -774,8 +915,12 @@ class RekGameUI(QMainWindow):
         s = self.seconds_elapsed % 60
         self.lbl_time.setText(f"⏱️ រយៈពេល : {h:02d}:{m:02d}:{s:02d}")
 
+    def _set_ai_status(self, text):
+        if hasattr(self, 'lbl_ai_status'):
+            self.lbl_ai_status.setText(f"🤖 AI : {text}")
+
     def on_cell_clicked(self, r, c):
-        if self.game_over:
+        if self.game_over or self.ai_thinking:
             return
 
         piece = self.board_logic.get_piece(r, c)
@@ -835,24 +980,33 @@ class RekGameUI(QMainWindow):
         if self._mode == "ai":
             self.current_player = 'L'
             self.lbl_turn_en.setText("TURN : LIGHT GREEN")
+            self.ai_thinking = True
+            self._set_ai_status("thinking...")
             if not self.game_over:
                 QApplication.processEvents()
-                QTimer.singleShot(600, self._trigger_ai_move)
+                QTimer.singleShot(2000, self._trigger_ai_move)
         else:
             self.current_player = 'L' if self.current_player == 'G' else 'G'
             self.lbl_turn_en.setText(f"TURN : {'GREEN' if self.current_player == 'G' else 'LIGHT GREEN'}")
 
     def _trigger_ai_move(self):
+        self._set_ai_status("choosing a move...")
         ai_move = self.ai_agent.calculate_move(self.board_logic)
         if ai_move:
             (ai_sr, ai_sc), (ai_er, ai_ec) = ai_move
             self.board_logic.make_move(ai_sr, ai_sc, ai_er, ai_ec)
             self.move_count += 1
             self.lbl_moves.setText(f"⟳ ចលនា : {self.move_count}")
+            self._set_ai_status("moved")
+        else:
+            self._set_ai_status("no moves")
+        self.ai_thinking = False
         self.refresh_board_visuals()
-        if self.check_game_status(): return
+        if self.check_game_status():
+            return
         self.current_player = 'G'
         self.lbl_turn_en.setText("TURN : GREEN")
+        self._set_ai_status("your turn")
 
     def undo_move(self):
         if self.board_logic.undo():
@@ -928,9 +1082,11 @@ class RekGameUI(QMainWindow):
         self.valid_moves = []
         self.move_count = 0
         self.game_over = False
+        self.ai_thinking = False
         self.seconds_elapsed = 0
         self.lbl_moves.setText("⟳ ចលនា : 0")
         self.lbl_turn_en.setText("TURN : GREEN")
+        self._set_ai_status("your turn")
         self.timer.start(1000)
         self.refresh_board_visuals()
 
@@ -951,6 +1107,65 @@ class RekGameUI(QMainWindow):
 # ==========================================
 # ៨. ផ្ទាំងទំព័រដើម (HOME UI)
 # ==========================================
+class LoginUI(QWidget):
+    def __init__(self, controller):
+        super().__init__()
+        self.controller = controller
+        self.setWindowTitle("Login — Rek Game")
+        self.resize(1000, 700)
+        self.init_ui()
+
+    def init_ui(self):
+        self.setStyleSheet("background-color: #1f1105;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(80, 80, 80, 80)
+        layout.setSpacing(20)
+
+        card = QFrame()
+        card.setStyleSheet("background-color: #110903; border: 2px solid #6a4b18; border-radius: 20px;")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(40, 40, 40, 40)
+        card_layout.setSpacing(16)
+
+        title = QLabel("Welcome to Rek Game")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("color: #ca8b47; font-size: 28px; font-family: 'Khmer OS Muol Light';")
+
+        subtitle = QLabel("Enter your name to continue")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setStyleSheet("color: #f7e6c4; font-size: 16px;")
+
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Your name...")
+        self.name_input.setFixedHeight(48)
+        self.name_input.setStyleSheet("background-color: #1f1105; color: white; border: 1px solid #6a4b18; border-radius: 10px; padding-left: 12px; font-size: 15px;")
+        self.name_input.returnPressed.connect(self.login)
+
+        saved_name = load_player_name()
+        if saved_name:
+            self.name_input.setText(saved_name)
+
+        btn_login = QPushButton("Login")
+        btn_login.setFixedHeight(50)
+        btn_login.setStyleSheet("QPushButton { background-color: #009a49; color: white; border-radius: 10px; font-size: 15px; font-weight: bold; } QPushButton:hover { background-color: #00b85a; }")
+        btn_login.clicked.connect(self.login)
+
+        card_layout.addWidget(title)
+        card_layout.addWidget(subtitle)
+        card_layout.addWidget(self.name_input)
+        card_layout.addWidget(btn_login)
+        layout.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
+
+    def login(self):
+        name = self.name_input.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Login", "Please enter your name.")
+            return
+
+        save_player_name(name)
+        self.controller.show_home()
+
+
 class HomeUI(QWidget):
     def __init__(self, controller):
         super().__init__()
@@ -1018,15 +1233,15 @@ QFrame{
         self.btn_ai = self._create_menu_btn("⚔️   លេងជាមួយបញ្ញាសិប្បនិម្មិត (Play vs AI)", "#9f672b")
         self.btn_player = self._create_menu_btn("👥   លេងគ្នាពីរនាក់ (Player vs Player)", "#9f672b")
         self.btn_rules = self._create_menu_btn("📜   ច្បាប់លេងហ្គេម (Rules)", "#9f672b")
+        self.btn_history = self._create_menu_btn("🏆 ប្រវត្តិការលេង (History)","#9f672b")       
         self.btn_exit = self._create_menu_btn("✕   ចាកចេញ (Exit)", "#9f672b")
-        self.btn_history = self._create_menu_btn(
-    "🏆 ប្រវត្តិការលេង (History)",
-    "#9f672b"
-)
+        self.btn_logout = self._create_menu_btn("⇥   Logout", "#8c4e2d")
+        
 
         self.btn_ai.clicked.connect(self.show_ai_dialog)
         self.btn_player.clicked.connect(lambda: self.controller.start_game("player"))
         self.btn_rules.clicked.connect(lambda: self.controller.show_rules("home"))
+        self.btn_logout.clicked.connect(self.logout)
         self.btn_history.clicked.connect(
     self.show_history
 )
@@ -1037,10 +1252,12 @@ QFrame{
         right_layout.addWidget(self.btn_player)
         right_layout.addSpacing(30)
         right_layout.addWidget(self.btn_rules)
-        right_layout.addSpacing(30)
-        right_layout.addWidget(self.btn_exit)
-        right_layout.addSpacing(30)
+        right_layout.addSpacing(20)
         right_layout.addWidget(self.btn_history)
+        right_layout.addSpacing(20)
+        right_layout.addWidget(self.btn_exit)
+        right_layout.addSpacing(20)
+        right_layout.addWidget(self.btn_logout)
         right_layout.addStretch()
         main_layout.addWidget(left_panel)
         main_layout.addWidget(right_panel, 1)
@@ -1049,6 +1266,12 @@ QFrame{
     def show_history(self):
         dlg = HistoryDialog()
         dlg.exec()
+
+    def logout(self):
+        clear_player_name()
+        QMessageBox.information(self, "Logout", "Your saved name has been cleared. The next new game will ask for a new name.")
+        self.controller.show_login()
+
     def _create_menu_btn(self, text, bg_color):
         btn = QPushButton(text)
         btn.setFixedHeight(55)
@@ -1089,10 +1312,11 @@ QFrame{
                 )
 
 # ==========================================
-# ៩. អ្នកគ្រប់គ្រងកម្មវិធី (CONTROLLER & MAIN)
+# ១០. អ្នកគ្រប់គ្រងកម្មវិធី (CONTROLLER & MAIN)
 # ==========================================
 class GameController:
     def __init__(self):
+        self.login_window = LoginUI(self)
         self.home_window = HomeUI(self)
         self.game_window = None
         self.rules_window = None
@@ -1103,22 +1327,48 @@ class GameController:
 
         if self.rules_window:
             self.rules_window.close()
+    def show_login(self):
+        if self.login_window:
+            self.login_window.show()
+        if self.home_window:
+            self.home_window.hide()
+        if self.game_window:
+            self.game_window.hide()
+        if self.rules_window:
+            self.rules_window.hide()
+
     def show_home(self): 
         self.home_window.show()
+        if self.login_window:
+            self.login_window.hide()
+        if self.game_window:
+            self.game_window.hide()
+        if self.rules_window:
+            self.rules_window.hide()
+
+    def logout(self):
+        clear_player_name()
+        if self.game_window:
+            self.game_window.close()
+            self.game_window = None
+        self.show_login()
 
     def start_game(self, mode, load_saved=False):
 
-        # ENTER NAME ONLY FOR NEW AI GAME
         if mode == "ai" and not load_saved:
-            dialog = EnterNameDialog()
+            saved_name = load_player_name()
+            if saved_name:
+                save_player_name(saved_name)
+            else:
+                dialog = EnterNameDialog()
 
-            if dialog.exec() == 0:
-                return
+                if dialog.exec() == 0:
+                    return
 
-            name = dialog.get_name()
+                saved_name = dialog.get_name()
 
-            if name:
-                save_player_name(name)
+                if saved_name:
+                    save_player_name(saved_name)
 
         self.game_window = RekGameUI(
             mode=mode,
@@ -1391,38 +1641,68 @@ class HistoryDialog(QDialog):
         super().__init__()
 
         self.setWindowTitle("ប្រវត្តិការលេង")
-        self.resize(800, 500)
+        self.resize(900, 520)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #110903;
+                border: 2px solid #6a4b18;
+            }
+            QLabel {
+                color: #f7e6c4;
+            }
+            QTableWidget {
+                background-color: #1f1105;
+                color: white;
+                border: 1px solid #6a4b18;
+                gridline-color: #6a4b18;
+            }
+            QHeaderView::section {
+                background-color: #381c06;
+                color: #ca8b47;
+                padding: 6px;
+                border: 1px solid #6a4b18;
+            }
+            QPushButton {
+                background-color: #381c06;
+                color: #ca8b47;
+                border: 1px solid #6a4b18;
+                border-radius: 8px;
+                padding: 8px 14px;
+            }
+        """)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
 
         title = QLabel("ប្រវត្តិការប្រកួត")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 22px; font-family: 'Khmer OS Muol Light';")
 
-        text = QTextEdit()
-        text.setReadOnly(True)
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Player", "Mode", "Result", "Date"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
 
         history = load_history()
+        self.table.setRowCount(len(history))
 
-        content = ""
-
-        for row in history:
-
-            content += (
-                f"👤 {row[0]}\n"
-                f"🎮 {row[1]}\n"
-                f"🏆 {row[2]}\n"
-                f"📅 {row[3]}\n"
-                f"{'-'*40}\n"
-            )
-
-        text.setText(content)
+        for row_idx, row in enumerate(history):
+            self.table.setItem(row_idx, 0, QTableWidgetItem(str(row[0] or "")))
+            self.table.setItem(row_idx, 1, QTableWidgetItem(str(row[1] or "")))
+            self.table.setItem(row_idx, 2, QTableWidgetItem(str(row[2] or "")))
+            self.table.setItem(row_idx, 3, QTableWidgetItem(str(row[3] or "")))
 
         btn = QPushButton("បិទ")
         btn.clicked.connect(self.accept)
 
         layout.addWidget(title)
-        layout.addWidget(text)
-        layout.addWidget(btn)
+        layout.addWidget(self.table)
+        layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignRight)
 if __name__ == "__main__":
     create_tables()
     app = QApplication(sys.argv)
