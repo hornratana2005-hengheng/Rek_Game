@@ -7,6 +7,14 @@ from PyQt6.QtCore import Qt
 
 from database import load_history, get_stats, load_player_name
 
+BG_DARK = "#1f1105"
+BG_PANEL = "#1D0D01"
+SEPARATOR = "#4f432f"
+TEXT_LIGHT = "#f5e9c5"
+ACCENT = "#d4af37"
+BUTTON_BG = "#7c6429"
+BUTTON_BG_HOVER = "#9b7c2f"
+
 
 class DashboardUI(QWidget):
     def __init__(self):
@@ -15,23 +23,36 @@ class DashboardUI(QWidget):
         self.setWindowTitle("Dashboard - Rek Game")
         self.resize(800, 500)
 
-        self.setStyleSheet("""
-            QWidget {
-                background-color: #110903;
-                color: #ecc06a;
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {BG_DARK};
+                color: {TEXT_LIGHT};
                 font-size: 14px;
-            }
-            QTableWidget {
-                background-color: #1f1105;
-                color: white;
-                border: 1px solid #6a4b18;
-            }
-            QPushButton {
-                background-color: #381c06;
-                border: 1px solid #6a4b18;
+                font-family: 'Khmer OS Muol Light';
+            }}
+            QTableWidget {{
+                background-color: {BG_PANEL};
+                color: {TEXT_LIGHT};
+                border: 1px solid {SEPARATOR};
+                gridline-color: {SEPARATOR};
+            }}
+            QHeaderView::section {{
+                background-color: {BG_PANEL};
+                color: {TEXT_LIGHT};
+                border: 1px solid {SEPARATOR};
                 padding: 8px;
-                color: #ecc06a;
-            }
+            }}
+            QPushButton {{
+                background-color: {BUTTON_BG};
+                border: 1px solid {ACCENT};
+                padding: 10px;
+                color: {TEXT_LIGHT};
+                border-radius: 12px;
+                font-family: 'Khmer OS Muol Light';
+            }}
+            QPushButton:hover {{
+                background-color: {BUTTON_BG_HOVER};
+            }}
         """)
 
         layout = QVBoxLayout(self)
